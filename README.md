@@ -10,7 +10,12 @@
 
 # Chào mừng các bạn đến với Day 22: LangSmith + Prompt Versioning
 
-## Tổng quan
+## 📋 Thông Tin Nộp Bài (Submission Information)
+- **Học viên:** Đỗ Nguyễn Ngọc Long
+- **GitHub Repository:** [https://github.com/ngoclongdo/K4-L3-DAY22-DoNguyenNgocLong-2A202602390-LLMOpsPromptVersioning](https://github.com/ngoclongdo/K4-L3-DAY22-DoNguyenNgocLong-2A202602390-LLMOpsPromptVersioning)
+- **LangSmith Project:** [day22-lab (≥ 100 Traces)](https://smith.langchain.com/o/959daa15-b94f-4436-bd1f-3e2ac71e179c/projects/p/day22-lab)
+
+---
 
 Trong lab này, bạn sẽ xây dựng một hệ thống hỏi đáp hoàn chỉnh tích hợp nhiều công nghệ AI hiện đại:
 

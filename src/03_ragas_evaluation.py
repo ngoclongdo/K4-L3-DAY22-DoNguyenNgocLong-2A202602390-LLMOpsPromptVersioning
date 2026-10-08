@@ -37,14 +37,21 @@ from qa_pairs import QA_PAIRS
 
 
 # ── 1. Prompt Templates (copy từ Bước 2) ──────────────────────────────────
-# TODO: Copy SYSTEM_V1 và SYSTEM_V2 mà bạn đã viết ở file 02_prompt_hub_ab_routing.py
-SYSTEM_V1 = ...
+SYSTEM_V1 = """Bạn là trợ lý AI súc tích. Hãy đọc kỹ phần Context được cung cấp và trả lời câu hỏi của người dùng một cách ngắn gọn, trực diện trong khoảng 2-4 câu. Tuyệt đối chỉ sử dụng các thông tin có trong Context và không tự suy diễn thêm.
+
+Context:
+{context}"""
+
 PROMPT_V1 = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_V1),
     ("human",  "{question}"),
 ])
 
-SYSTEM_V2 = ...
+SYSTEM_V2 = """Bạn là chuyên gia phân tích AI cấp cao. Hãy nghiên cứu kỹ phần Context được cung cấp để đưa ra câu trả lời toàn diện, có cấu trúc logic rõ ràng và chuyên nghiệp (từ 3-5 câu hoặc phân mục mạch lạc). Chỉ sử dụng các sự thật (facts) được xác thực trong Context để đảm bảo độ chính xác tuyệt đối.
+
+Context:
+{context}"""
+
 PROMPT_V2 = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_V2),
     ("human",  "{question}"),
@@ -63,6 +70,10 @@ def setup_vectorstore():
 
 
 # ── 3. Chạy RAG và thu thập kết quả ───────────────────────────────────────
+import time
+
+_CONTEXT_CACHE = {}
+
 def run_rag(retriever, llm, prompt, question: str) -> dict:
     """
     Chạy RAG chain cho 1 câu hỏi.
@@ -72,31 +83,40 @@ def run_rag(retriever, llm, prompt, question: str) -> dict:
 
     Trả về: {"answer": str, "contexts": list[str]}
     """
-    # TODO: Retrieve documents từ retriever
-    docs = ...
+    if question in _CONTEXT_CACHE:
+        contexts = _CONTEXT_CACHE[question]
+    else:
+        docs = retriever.invoke(question)
+        contexts = [doc.page_content for doc in docs]
+        _CONTEXT_CACHE[question] = contexts
 
-    # TODO: Tạo contexts là danh sách page_content (KHÔNG ghép chuỗi ở đây)
-    # Gợi ý: contexts = [doc.page_content for doc in docs]
-    contexts = ...   # phải là list[str] !
-
-    # TODO: Ghép contexts thành 1 string để truyền vào {context} của prompt
     ctx_str = "\n\n".join(contexts)
 
-    # TODO: Chạy chain (prompt | llm | StrOutputParser()).invoke(...)
     answer = (prompt | llm | StrOutputParser()).invoke({
-        "context":  ...,
-        "question": ...,
+        "context":  ctx_str,
+        "question": question,
     })
 
-    # TODO: Trả về dict với answer và contexts (list)
-    return {"answer": ..., "contexts": ...}
+    return {"answer": answer, "contexts": contexts}
 
+
+CACHE_FILE = Path(__file__).parent.parent / "data" / "rag_outputs_cache.json"
+CHECKPOINT_FILE = Path(__file__).parent.parent / "data" / "ragas_checkpoint.json"
 
 def collect_rag_outputs(vectorstore, prompt_version: str) -> list:
     """
     Chạy tất cả 50 QA pairs qua prompt version được chỉ định.
     Trả về: list of dict với keys: question, reference, answer, contexts
     """
+    if CACHE_FILE.exists():
+        try:
+            cached_data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if prompt_version in cached_data and len(cached_data[prompt_version]) == len(QA_PAIRS):
+                print(f"\n📦 Tìm thấy 50 câu hỏi đã tạo cho Prompt {prompt_version} trong cache, đang tải...")
+                return cached_data[prompt_version]
+        except Exception:
+            pass
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
     llm       = get_llm()
     prompt    = PROMPTS[prompt_version]
@@ -105,20 +125,30 @@ def collect_rag_outputs(vectorstore, prompt_version: str) -> list:
     print(f"\n🚀 Đang chạy 50 câu hỏi với prompt {prompt_version} ...")
 
     for i, qa in enumerate(QA_PAIRS, 1):
-        # TODO: Gọi run_rag() cho câu hỏi hiện tại
-        out = ...
-
-        # TODO: Append vào results dict với 4 keys
+        out = run_rag(retriever, llm, prompt, qa["question"])
         results.append({
             "question":  qa["question"],
             "reference": qa["reference"],
-            "answer":    ...,        # out["answer"]
-            "contexts":  ...,        # out["contexts"] — phải là list[str] !
+            "answer":    out["answer"],
+            "contexts":  out["contexts"],
         })
         print(f"  [{i:02d}/50] {qa['question'][:60]}")
+        time.sleep(0.2)
+
+    # Cập nhật cache file
+    cached_data = {}
+    if CACHE_FILE.exists():
+        try:
+            cached_data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            cached_data = {}
+    cached_data[prompt_version] = results
+    CACHE_FILE.write_text(json.dumps(cached_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return results
 
+
+from ragas.run_config import RunConfig
 
 # ── 4. Tạo RAGAS EvaluationDataset ────────────────────────────────────────
 def build_ragas_dataset(rag_results: list) -> EvaluationDataset:
@@ -131,18 +161,16 @@ def build_ragas_dataset(rag_results: list) -> EvaluationDataset:
       retrieved_contexts → list[str] các đoạn đã retrieve
       reference          → đáp án chuẩn (ground truth)
     """
-    # TODO: Tạo list các SingleTurnSample từ rag_results
     samples = [
         SingleTurnSample(
-            user_input=...,           # r["question"]
-            response=...,             # r["answer"]
-            retrieved_contexts=...,   # r["contexts"]
-            reference=...,            # r["reference"]
+            user_input=r["question"],
+            response=r["answer"],
+            retrieved_contexts=r["contexts"],
+            reference=r["reference"],
         )
         for r in rag_results
     ]
 
-    # TODO: Wrap thành EvaluationDataset và trả về
     return EvaluationDataset(samples=samples)
 
 
@@ -154,42 +182,62 @@ def run_ragas_eval(rag_results: list, version: str) -> dict:
 
     Lưu ý: evaluate() thực hiện rất nhiều lần gọi LLM → mất 5-10 phút / version.
     """
+    # Kiểm tra xem version này đã có checkpoint hợp lệ chưa
+    if CHECKPOINT_FILE.exists():
+        try:
+            saved_checkpoint = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            saved_scores = saved_checkpoint.get(f"{version}_scores")
+            if saved_scores and all(not np.isnan(v) for v in saved_scores.values()):
+                print(f"\n📦 Tìm thấy checkpoint hợp lệ cho Prompt {version.upper()}, đang dùng kết quả đã lưu:")
+                for k, v in saved_scores.items():
+                    star = " ⭐" if k == "faithfulness" and v >= 0.8 else ""
+                    print(f"  {k:30s}: {v:.4f}{star}")
+                return saved_scores
+        except Exception:
+            pass
+
     print(f"\n📐 Đang đánh giá RAGAS cho prompt {version} ... (vui lòng chờ ~5-10 phút)")
 
-    # TODO: Tạo EvaluationDataset từ rag_results
-    dataset = ...
+    dataset = build_ragas_dataset(rag_results)
 
     # LLM và Embeddings riêng để RAGAS dùng làm evaluator
     llm_eval = get_llm(temperature=0)
     emb_eval = get_embeddings()
 
-    # TODO: Gọi evaluate() với đầy đủ 4 metrics
-    # Gợi ý:
-    #   result = evaluate(
-    #       dataset,
-    #       metrics=[faithfulness, answer_relevancy, context_recall, context_precision],
-    #       llm=llm_eval,
-    #       embeddings=emb_eval,
-    #   )
+    # Cấu hình RunConfig giới hạn max_workers=4 để tránh chạm rate limit của Gemini API
+    run_config = RunConfig(timeout=180, max_retries=10, max_wait=60, max_workers=4)
+
     result = evaluate(
-        ...,
-        metrics=[...],
-        llm=...,
-        embeddings=...,
+        dataset,
+        metrics=[faithfulness, answer_relevancy, context_recall, context_precision],
+        llm=llm_eval,
+        embeddings=emb_eval,
+        run_config=run_config,
     )
 
     # Tính mean score cho mỗi metric
-    # result["faithfulness"] trả về list of floats → dùng np.mean()
     scores = {}
     for key in ["faithfulness", "answer_relevancy", "context_recall", "context_precision"]:
         raw = result[key]
-        scores[key] = float(np.mean([v for v in raw if v is not None]))
+        valid_vals = [float(v) for v in raw if v is not None and not np.isnan(v)]
+        scores[key] = float(np.mean(valid_vals)) if valid_vals else float("nan")
 
     # In kết quả
     print(f"\n📊 Kết quả RAGAS — Prompt {version.upper()}:")
     for k, v in scores.items():
         star = " ⭐" if k == "faithfulness" and v >= 0.8 else ""
         print(f"  {k:30s}: {v:.4f}{star}")
+
+    # Lưu checkpoint nếu điểm hợp lệ
+    if all(not np.isnan(v) for v in scores.values()):
+        ckpt = {}
+        if CHECKPOINT_FILE.exists():
+            try:
+                ckpt = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                ckpt = {}
+        ckpt[f"{version}_scores"] = scores
+        CHECKPOINT_FILE.write_text(json.dumps(ckpt, indent=2), encoding="utf-8")
 
     return scores
 
@@ -203,8 +251,7 @@ def main():
     if not config.validate():
         sys.exit(1)
 
-    # TODO: Tạo vectorstore
-    vectorstore = ...
+    vectorstore = setup_vectorstore()
 
     # Thu thập kết quả RAG cho cả V1 và V2
     v1_results = collect_rag_outputs(vectorstore, "v1")
@@ -231,17 +278,18 @@ def main():
         print(f"\n⚠️  Chưa đạt mục tiêu ({best_faith:.4f} < 0.8).")
         print("   Gợi ý: giảm chunk_size, tăng k, hoặc điều chỉnh prompt.")
 
-    # TODO: Lưu báo cáo vào data/ragas_report.json
+    # Lưu báo cáo vào data/ragas_report.json và evidence/03_ragas_report.json
     report = {
         "prompt_v1_scores": v1_scores,
         "prompt_v2_scores": v2_scores,
         "target_met": best_faith >= 0.8,
     }
     report_path = Path(__file__).parent.parent / "data" / "ragas_report.json"
-    # TODO: Ghi report vào file bằng json.dumps hoặc json.dump
-    # Gợi ý: report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    ...
-    print(f"💾 Đã lưu báo cáo vào {report_path}")
+    evidence_report_path = Path(__file__).parent.parent / "evidence" / "03_ragas_report.json"
+    report_json = json.dumps(report, indent=2, ensure_ascii=False)
+    report_path.write_text(report_json, encoding="utf-8")
+    evidence_report_path.write_text(report_json, encoding="utf-8")
+    print(f"💾 Đã lưu báo cáo vào {report_path} và {evidence_report_path}")
 
 
 if __name__ == "__main__":

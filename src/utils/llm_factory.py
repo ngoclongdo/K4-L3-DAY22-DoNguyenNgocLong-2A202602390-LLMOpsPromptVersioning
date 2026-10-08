@@ -51,6 +51,7 @@ def get_llm(provider: str = None, temperature: float = 0.0):
             model=config.GEMINI_MODEL,
             google_api_key=config.GOOGLE_API_KEY,
             temperature=temperature,
+            max_retries=6,
         )
 
     elif provider == "anthropic":
@@ -116,8 +117,35 @@ def get_embeddings(provider: str = None):
         return OpenAIEmbeddings(**kwargs)
 
     elif provider == "gemini":
+        import time
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        return GoogleGenerativeAIEmbeddings(
+
+        class RobustGoogleEmbeddings(GoogleGenerativeAIEmbeddings):
+            def embed_documents(self, texts, **kwargs):
+                for attempt in range(6):
+                    try:
+                        return super().embed_documents(texts, **kwargs)
+                    except Exception as e:
+                        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                            print(f"   ⏳ Gặp rate limit embedding (429), chờ 30s trước khi thử lại (lần {attempt + 1}/6)...")
+                            time.sleep(30)
+                        else:
+                            raise e
+                return super().embed_documents(texts, **kwargs)
+
+            def embed_query(self, text, **kwargs):
+                for attempt in range(6):
+                    try:
+                        return super().embed_query(text, **kwargs)
+                    except Exception as e:
+                        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                            print(f"   ⏳ Gặp rate limit embedding (429), chờ 30s trước khi thử lại (lần {attempt + 1}/6)...")
+                            time.sleep(30)
+                        else:
+                            raise e
+                return super().embed_query(text, **kwargs)
+
+        return RobustGoogleEmbeddings(
             model=config.GEMINI_EMBEDDING_MODEL,
             google_api_key=config.GOOGLE_API_KEY,
         )
